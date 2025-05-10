@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 - `clear` function in `functions.py` enhanced
 - `update` function in `functions.py` enhanced
 ### Removed
+- Python 3.6 support
 - old issue template structure
 ## [0.3] - 2025-01-13
 ### Removed
