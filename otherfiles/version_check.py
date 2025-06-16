@@ -4,7 +4,7 @@ import os
 import sys
 import codecs
 Failed = 0
-DMETA_VERSION = "0.3"
+DMETA_VERSION = "0.4"
 
 
 SETUP_ITEMS = [
@@ -21,6 +21,7 @@ PARAMS_ITEMS = ['DMETA_VERSION = "{0}"']
 META_ITEMS = ['% set version = "{0}" %']
 ISSUE_TEMPLATE_ITEMS = ["- DMeta {0}"]
 SECURITY_ITEMS = ["| {0}           | :white_check_mark: |", "| < {0}         | :x:                |"]
+PRE_COMMIT_CONFIG = ['rev: v{0}']
 
 FILES = {
     os.path.join("otherfiles", "meta.yaml"): META_ITEMS,
@@ -30,6 +31,7 @@ FILES = {
     "SECURITY.md": SECURITY_ITEMS,
     os.path.join("dmeta", "params.py"): PARAMS_ITEMS,
     os.path.join(".github", "ISSUE_TEMPLATE", "bug_report.yml"): ISSUE_TEMPLATE_ITEMS,
+    ".pre-commit-config.yaml": PRE_COMMIT_CONFIG,
 }
 
 TEST_NUMBER = len(FILES)
