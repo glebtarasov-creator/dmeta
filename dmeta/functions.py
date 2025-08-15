@@ -3,6 +3,7 @@
 import os
 import shutil
 import zipfile
+from PIL import Image
 from art import tprint
 import defusedxml.lxml as lxml
 from .errors import DMetaBaseError
@@ -97,6 +98,7 @@ def clear(microsoft_file_name, in_place=False, verbose=False):
         print(f"Cleared metadata for: {microsoft_file_name}")
 
     return modified
+
 
 def clear_all(in_place=False, verbose=False):
     """
@@ -203,6 +205,7 @@ def update(config_file_name, microsoft_file_name, in_place=False, verbose=False)
 
     return modified
 
+
 def update_all(config_file_name, in_place=False, verbose=False):
     """
     Update all the editable metadata in any Microsoft file in the current directory and its subdirectories according to the given config file.
@@ -222,24 +225,49 @@ def update_all(config_file_name, in_place=False, verbose=False):
 
     for root, _, files in os.walk(path):
         for file in files:
-            try:
-                format = get_microsoft_format(file)
-                if format is None:
-                    return
-                update(config_file_name, os.path.join(root, file), in_place, verbose)
-                counter[format] += 1
-            except DMetaBaseError as e:
-                e = e.__str__()
-                if e == NOT_IMPLEMENTED_ERROR:
-                    print("DMeta couldn't update the metadata of {} since {}".format(file, NOT_IMPLEMENTED_ERROR))
-                if e == FILE_FORMAT_DOES_NOT_EXIST_ERROR:
-                    print(
-                        "Updating the metadata of {} failed because DMeta {}".format(
-                            file, FILE_FORMAT_DOES_NOT_EXIST_ERROR))
+            format = get_microsoft_format(file)
+            if format is None:
+                return
+            update(config_file_name, os.path.join(root, file), in_place, verbose)
+            counter[format] += 1
 
     if verbose:
         for format in counter.keys():
             print("Metadata of {} files with the format of {} has been updated.".format(counter[format], format))
+
+
+def clear_png_metadata(png_file_name, in_place=False, verbose=False):
+    """
+    Remove all metadata from a PNG file using Pillow.
+
+    :param png_file_name: path to original PNG file
+    :type png_file_name: str
+    :param in_place: if True, overwrite the original file with cleaned version
+    :type in_place: bool
+    :param verbose: if True, print detailed output
+    :type verbose: bool
+    :return: path to cleaned PNG file
+    """
+    if not os.path.exists(png_file_name) or not png_file_name.lower().endswith(".png"):
+        return
+
+    if in_place:
+        output_path = png_file_name
+    else:
+        base, ext = os.path.splitext(png_file_name)
+        output_path = base + "_cleaned" + ext
+
+    # Remove metadata
+    with Image.open(png_file_name) as img:
+        clean_img = Image.new(img.mode, img.size)
+        clean_img.putdata(list(img.getdata()))
+        clean_img.save(output_path, format="PNG")
+
+    if verbose:
+        action = "overwritten" if in_place else f"saved to {output_path}"
+        print(f"Metadata cleared for: {png_file_name} ({action})")
+
+    return output_path
 
 
 def extract_metadata(microsoft_file_name):
