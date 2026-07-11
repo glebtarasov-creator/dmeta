@@ -5,16 +5,11 @@ import os
 import shutil
 import zipfile
 from PIL import Image
-from art import tprint
 import defusedxml.ElementTree as ET
-from .errors import DMetaBaseError
 from .util import get_file_format, extract, read_json
 from .params import (
     CORE_XML_MAP,
     APP_XML_MAP,
-    OVERVIEW,
-    DMETA_VERSION,
-    UPDATE_COMMAND_WITH_NO_CONFIG_FILE_ERROR,
     SUPPORTED_MICROSOFT_FORMATS,
     SUPPORTED_FORMATS,
     JPEG_MARKER_PREFIX,
@@ -71,16 +66,16 @@ def clear(microsoft_file_name, in_place=False, verbose=False):
     :type in_place: bool
     :param verbose: the `verbose` flag enables detailed output
     :type verbose: bool
-    :return: path to the cleared file, None if format is unsupported, 
-             or original path if metadata is already cleared
+    :return: path to the cleared file if successful, None if format is unsupported,
+             or original file path if metadata is already cleared
     :rtype: str or None
     """
     microsoft_format = get_file_format(microsoft_file_name)
     if microsoft_format is None or microsoft_format not in SUPPORTED_MICROSOFT_FORMATS:
-        return
-    
+        return None
+
     unzipped_dir, source_file = extract(microsoft_file_name)
-    
+
     # Using try-finally to ensure the source_file is closed in all cases
     try:
         doc_props_dir = os.path.join(unzipped_dir, "docProps")
@@ -135,6 +130,7 @@ def clear(microsoft_file_name, in_place=False, verbose=False):
         # On Windows, we may need to force garbage collection or add a small delay
         # to ensure file handles are fully released before removing the directory
         import gc
+
         gc.collect()  # Force garbage collection to release any remaining references
         try:
             shutil.rmtree(unzipped_dir)
@@ -142,13 +138,16 @@ def clear(microsoft_file_name, in_place=False, verbose=False):
             # If we can't remove the directory immediately on Windows,
             # try again after a short delay
             import time
+
             time.sleep(0.1)
             try:
                 shutil.rmtree(unzipped_dir)
             except PermissionError:
                 # If it still fails, log the error but don't crash
                 if verbose:
-                    print(f"Warning: Could not remove temporary directory {unzipped_dir}, it may be cleaned up later")
+                    print(
+                        f"Warning: Could not remove temporary directory {unzipped_dir}, it may be cleaned up later"
+                    )
 
 
 def clear_all(in_place=False, verbose=False):
@@ -213,7 +212,7 @@ def update(config_file_name, microsoft_file_name, in_place=False, verbose=False)
         return
 
     unzipped_dir, source_file = extract(microsoft_file_name)
-    
+
     # Using try-finally to ensure the source_file is closed in all cases
     try:
         doc_props_dir = os.path.join(unzipped_dir, "docProps")
@@ -279,6 +278,7 @@ def update(config_file_name, microsoft_file_name, in_place=False, verbose=False)
         # On Windows, we may need to force garbage collection or add a small delay
         # to ensure file handles are fully released before removing the directory
         import gc
+
         gc.collect()  # Force garbage collection to release any remaining references
         try:
             shutil.rmtree(unzipped_dir)
@@ -286,13 +286,16 @@ def update(config_file_name, microsoft_file_name, in_place=False, verbose=False)
             # If we can't remove the directory immediately on Windows,
             # try again after a short delay
             import time
+
             time.sleep(0.1)
             try:
                 shutil.rmtree(unzipped_dir)
             except PermissionError:
                 # If it still fails, log the error but don't crash
                 if verbose:
-                    print(f"Warning: Could not remove temporary directory {unzipped_dir}, it may be cleaned up later")
+                    print(
+                        f"Warning: Could not remove temporary directory {unzipped_dir}, it may be cleaned up later"
+                    )
 
 
 def update_all(config_file_name, in_place=False, verbose=False):
@@ -550,94 +553,3 @@ def clear_file(file_name, in_place=False, verbose=False):
     if handler is None:
         return None
     return handler(file_name, in_place, verbose)
-
-
-def extract_metadata(microsoft_file_name):
-    """
-    Extract all the editable metadata from the given Microsoft file.
-
-    :param microsoft_file_name: name of Microsoft file
-    :type microsoft_file_name: str
-    :return: dict containing the extracted metadata
-    """
-    unzipped_dir, source_file = extract(microsoft_file_name)
-    
-    try:
-        doc_props_dir = os.path.join(unzipped_dir, "docProps")
-        core_xml_path = os.path.join(doc_props_dir, "core.xml")
-        app_xml_path = os.path.join(doc_props_dir, "app.xml")
-
-        extracted_metadata = {}
-
-        def _extract_metadata_from_xml(xml_path, xml_map):
-            if os.path.exists(xml_path):
-                tree = ET.parse(xml_path)
-                for xml_element in tree.iter():
-                    for personal_field, xml_tag in xml_map.items():
-                        if xml_tag in xml_element.tag:
-                            value = xml_element.text if xml_element.text else ""
-                            extracted_metadata[personal_field] = value.strip()
-
-        _extract_metadata_from_xml(core_xml_path, CORE_XML_MAP)
-        _extract_metadata_from_xml(app_xml_path, APP_XML_MAP)
-
-        return extracted_metadata
-    finally:
-        # Close the file handle before removing the directory
-        source_file.close()
-        # On Windows, we may need to force garbage collection or add a small delay
-        # to ensure file handles are fully released before removing the directory
-        import gc
-        gc.collect()  # Force garbage collection to release any remaining references
-        try:
-            shutil.rmtree(unzipped_dir)
-        except PermissionError:
-            # If we can't remove the directory immediately on Windows,
-            # try again after a short delay
-            import time
-            time.sleep(0.1)
-            try:
-                shutil.rmtree(unzipped_dir)
-            except PermissionError:
-                # If it still fails, log the error but don't crash
-                print(f"Warning: Could not remove temporary directory {unzipped_dir}, it may be cleaned up later")
-
-
-def dmeta_help():
-    """
-    Print DMeta details.
-
-    :return: None
-    """
-    print(OVERVIEW)
-    print("Repo : https://github.com/openscilab/dmeta")
-    print("Webpage : https://openscilab.com")
-
-
-def run_dmeta(args):
-    """
-    Run DMeta.
-
-    :param args: input arguments
-    :type args: argparse.Namespace
-    :return: None
-    """
-    verbose = args.verbose
-    if args.clear:
-        clear_file(args.clear[0], args.inplace, verbose)
-    elif args.clear_all:
-        clear_all(args.inplace, verbose)
-    elif args.update:
-        if not args.config:
-            raise DMetaBaseError(UPDATE_COMMAND_WITH_NO_CONFIG_FILE_ERROR)
-        else:
-            update(args.config[0], args.update[0], args.inplace, verbose)
-    elif args.update_all:
-        if not args.config:
-            raise DMetaBaseError(UPDATE_COMMAND_WITH_NO_CONFIG_FILE_ERROR)
-        else:
-            update_all(args.config[0], args.inplace, verbose)
-    else:
-        tprint("DMeta")
-        tprint("V:" + DMETA_VERSION)
-        dmeta_help()
