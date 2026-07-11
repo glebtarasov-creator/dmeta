@@ -56,6 +56,180 @@ def overwrite_metadata(xml_path, metadata=None, is_core=True):
         tree.write(xml_path)
 
 
+def _cleanup_extracted(unzipped_dir, source_file, verbose):
+    """Clean up extracted directory and close file handle."""
+    # Ensure the source_file is closed before removing directory
+    source_file.close()
+    # On Windows, we may need to force garbage collection or add a small delay
+    # to ensure file handles are fully released before removing the directory
+    import gc
+
+    gc.collect()  # Force garbage collection to release any remaining references
+    try:
+        shutil.rmtree(unzipped_dir)
+    except PermissionError:
+        # If we can't remove the directory immediately on Windows,
+        # try again after a short delay
+        import time
+
+        time.sleep(0.1)
+        try:
+            shutil.rmtree(unzipped_dir)
+        except PermissionError:
+            # If it still fails, log the error but don't crash
+            if verbose:
+                print(
+                    f"Warning: Could not remove temporary directory {unzipped_dir}, it may be cleaned up later"
+                )
+
+
+def _process_metadata(source_file_path, in_place, verbose, process_type, **kwargs):
+    """
+    Shared function to process metadata in Microsoft files (clear/update)
+    
+    :param source_file_path: path to the source file to process
+    :type source_file_path: str
+    :param in_place: whether to modify the file in place
+    :type in_place: bool
+    :param verbose: whether to enable verbose output
+    :type verbose: bool
+    :param process_type: type of processing ('clear' or 'update')
+    :type process_type: str
+    :param kwargs: additional arguments for processing (e.g., new_metadata_dict for update)
+    :return: path to the processed file or None if unsuccessful
+    :rtype: str or None
+    """
+    # Validate format
+    microsoft_format = get_file_format(source_file_path)
+    if microsoft_format is None or microsoft_format not in SUPPORTED_MICROSOFT_FORMATS:
+        return None
+
+    # Extract the file
+    unzipped_dir, source_file = extract(source_file_path)
+
+    try:
+        doc_props_dir = os.path.join(unzipped_dir, "docProps")
+        core_xml_path = os.path.join(doc_props_dir, "core.xml")
+        app_xml_path = os.path.join(doc_props_dir, "app.xml")
+
+        # Define processing logic based on type
+        if process_type == 'clear':
+            # Define the clear-specific check function
+            def is_metadata_cleared(xml_path, is_core=True):
+                if not os.path.exists(xml_path):
+                    return True
+                tree = ET.parse(xml_path)
+                xml_map = CORE_XML_MAP if is_core else APP_XML_MAP
+                for xml_element in tree.iter():
+                    for personal_field in xml_map:
+                        associated_xml_tag = xml_map[personal_field]
+                        if associated_xml_tag in xml_element.tag:
+                            if xml_element.text and xml_element.text.strip():
+                                return False
+                return True
+
+            # Check if metadata is already cleared
+            core_cleared = is_metadata_cleared(core_xml_path)
+            app_cleared = is_metadata_cleared(app_xml_path, is_core=False)
+
+            if core_cleared and app_cleared:
+                if verbose:
+                    print(f"Metadata is already cleared for: {source_file_path}")
+                return source_file_path  # Return the original file path when already cleared
+
+            # Clear metadata if not already cleared
+            overwrite_metadata(core_xml_path)
+            overwrite_metadata(app_xml_path, is_core=False)
+
+            # Determine output filename
+            modified = source_file_path
+            if not in_place:
+                modified = (
+                    source_file_path[: source_file_path.rfind(".")]
+                    + "_cleared"
+                    + "."
+                    + microsoft_format
+                )
+
+        elif process_type == 'update':
+            # Get the metadata from kwargs
+            new_metadata_dict = kwargs.get('new_metadata_dict', {})
+            personal_fields_core_xml = {
+                k: new_metadata_dict[k] for k in CORE_XML_MAP.keys() if k in new_metadata_dict
+            }
+            personal_fields_app_xml = {k: new_metadata_dict[k] for k in APP_XML_MAP.keys() if k in new_metadata_dict}
+
+            has_core_tags = len(personal_fields_core_xml) > 0
+            has_app_tags = len(personal_fields_app_xml) > 0
+
+            if not (has_core_tags or has_app_tags):
+                print("There isn't any chosen personal field to remove.")
+                return None
+
+            # Define the update-specific check function
+            def is_metadata_up_to_date(xml_path, metadata, is_core=True):
+                if not os.path.exists(xml_path):
+                    return False
+                tree = ET.parse(xml_path)
+                xml_map = CORE_XML_MAP if is_core else APP_XML_MAP
+                for xml_element in tree.iter():
+                    for personal_field in xml_map if metadata is None else metadata:
+                        associated_xml_tag = xml_map[personal_field]
+                        if associated_xml_tag in xml_element.tag:
+                            if xml_element.text != metadata[personal_field]:
+                                return False
+                return True
+
+            core_up_to_date = (
+                is_metadata_up_to_date(core_xml_path, personal_fields_core_xml)
+                if has_core_tags
+                else True
+            )
+            app_up_to_date = (
+                is_metadata_up_to_date(app_xml_path, personal_fields_app_xml)
+                if has_app_tags
+                else True
+            )
+
+            if core_up_to_date and app_up_to_date:
+                if verbose:
+                    print(f"Metadata is already up to date for: {source_file_path}")
+                return source_file_path
+
+            # Update metadata if not already up to date
+            if has_core_tags:
+                overwrite_metadata(core_xml_path, personal_fields_core_xml)
+            if has_app_tags:
+                overwrite_metadata(app_xml_path, personal_fields_app_xml, is_core=False)
+
+            # Determine output filename
+            modified = source_file_path
+            if not in_place:
+                modified = (
+                    source_file_path[: source_file_path.rfind(".")]
+                    + "_updated"
+                    + "."
+                    + microsoft_format
+                )
+        else:
+            raise ValueError(f"Unknown process type: {process_type}")
+
+        # Re-zip the file
+        with zipfile.ZipFile(modified, "w", compression=zipfile.ZIP_DEFLATED) as file:
+            for file_name in source_file.namelist():
+                file.write(os.path.join(unzipped_dir, file_name), file_name)
+            file.close()
+
+        if verbose:
+            action = "cleared" if process_type == 'clear' else "updated"
+            print(f"{action.capitalize()} metadata for: {source_file_path}")
+
+        return modified
+
+    finally:
+        _cleanup_extracted(unzipped_dir, source_file, verbose)
+
+
 def clear(microsoft_file_name, in_place=False, verbose=False):
     """
     Clear all the editable metadata in the given Microsoft file.
@@ -70,84 +244,7 @@ def clear(microsoft_file_name, in_place=False, verbose=False):
              or original file path if metadata is already cleared
     :rtype: str or None
     """
-    microsoft_format = get_file_format(microsoft_file_name)
-    if microsoft_format is None or microsoft_format not in SUPPORTED_MICROSOFT_FORMATS:
-        return None
-
-    unzipped_dir, source_file = extract(microsoft_file_name)
-
-    # Using try-finally to ensure the source_file is closed in all cases
-    try:
-        doc_props_dir = os.path.join(unzipped_dir, "docProps")
-        core_xml_path = os.path.join(doc_props_dir, "core.xml")
-        app_xml_path = os.path.join(doc_props_dir, "app.xml")
-
-        def is_metadata_cleared(xml_path, is_core=True):
-            if not os.path.exists(xml_path):
-                return True
-            tree = ET.parse(xml_path)
-            xml_map = CORE_XML_MAP if is_core else APP_XML_MAP
-            for xml_element in tree.iter():
-                for personal_field in xml_map:
-                    associated_xml_tag = xml_map[personal_field]
-                    if associated_xml_tag in xml_element.tag:
-                        if xml_element.text and xml_element.text.strip():
-                            return False
-            return True
-
-        core_cleared = is_metadata_cleared(core_xml_path)
-        app_cleared = is_metadata_cleared(app_xml_path, is_core=False)
-
-        if core_cleared and app_cleared:
-            if verbose:
-                print(f"Metadata is already cleared for: {microsoft_file_name}")
-            return microsoft_file_name  # Return the original file path when already cleared
-
-        # Clear metadata if not already cleared
-        overwrite_metadata(core_xml_path)
-        overwrite_metadata(app_xml_path, is_core=False)
-
-        modified = microsoft_file_name
-        if not in_place:
-            modified = (
-                microsoft_file_name[: microsoft_file_name.rfind(".")]
-                + "_cleared"
-                + "."
-                + microsoft_format
-            )
-        with zipfile.ZipFile(modified, "w", compression=zipfile.ZIP_DEFLATED) as file:
-            for file_name in source_file.namelist():
-                file.write(os.path.join(unzipped_dir, file_name), file_name)
-            file.close()
-
-        if verbose:
-            print(f"Cleared metadata for: {microsoft_file_name}")
-
-        return modified
-    finally:
-        # Ensure the source_file is closed before removing directory
-        source_file.close()
-        # On Windows, we may need to force garbage collection or add a small delay
-        # to ensure file handles are fully released before removing the directory
-        import gc
-
-        gc.collect()  # Force garbage collection to release any remaining references
-        try:
-            shutil.rmtree(unzipped_dir)
-        except PermissionError:
-            # If we can't remove the directory immediately on Windows,
-            # try again after a short delay
-            import time
-
-            time.sleep(0.1)
-            try:
-                shutil.rmtree(unzipped_dir)
-            except PermissionError:
-                # If it still fails, log the error but don't crash
-                if verbose:
-                    print(
-                        f"Warning: Could not remove temporary directory {unzipped_dir}, it may be cleaned up later"
-                    )
+    return _process_metadata(microsoft_file_name, in_place, verbose, 'clear')
 
 
 def clear_all(in_place=False, verbose=False):
@@ -192,110 +289,11 @@ def update(config_file_name, microsoft_file_name, in_place=False, verbose=False)
     :type in_place: bool
     :param verbose: the `verbose` flag enables detailed output
     :type verbose: bool
-    :return: None
+    :return: path to the updated file if successful, None if format is unsupported
+    :rtype: str or None
     """
     config = read_json(config_file_name)
-    personal_fields_core_xml = {
-        k: config[k] for k in CORE_XML_MAP.keys() if k in config
-    }
-    personal_fields_app_xml = {k: config[k] for k in APP_XML_MAP.keys() if k in config}
-
-    has_core_tags = len(personal_fields_core_xml) > 0
-    has_app_tags = len(personal_fields_app_xml) > 0
-
-    if not (has_core_tags or has_app_tags):
-        print("There isn't any chosen personal field to remove.")
-        return
-
-    microsoft_format = get_file_format(microsoft_file_name)
-    if microsoft_format is None or microsoft_format not in SUPPORTED_MICROSOFT_FORMATS:
-        return
-
-    unzipped_dir, source_file = extract(microsoft_file_name)
-
-    # Using try-finally to ensure the source_file is closed in all cases
-    try:
-        doc_props_dir = os.path.join(unzipped_dir, "docProps")
-        core_xml_path = os.path.join(doc_props_dir, "core.xml")
-        app_xml_path = os.path.join(doc_props_dir, "app.xml")
-
-        # Check if metadata is already up to date
-        def is_metadata_up_to_date(xml_path, metadata, is_core=True):
-            if not os.path.exists(xml_path):
-                return False
-            tree = ET.parse(xml_path)
-            xml_map = CORE_XML_MAP if is_core else APP_XML_MAP
-            for xml_element in tree.iter():
-                for personal_field in xml_map if metadata is None else metadata:
-                    associated_xml_tag = xml_map[personal_field]
-                    if associated_xml_tag in xml_element.tag:
-                        if xml_element.text != metadata[personal_field]:
-                            return False
-            return True
-
-        core_up_to_date = (
-            is_metadata_up_to_date(core_xml_path, personal_fields_core_xml)
-            if has_core_tags
-            else True
-        )
-        app_up_to_date = (
-            is_metadata_up_to_date(app_xml_path, personal_fields_app_xml)
-            if has_app_tags
-            else True
-        )
-
-        if core_up_to_date and app_up_to_date:
-            if verbose:
-                print(f"Metadata is already up to date for: {microsoft_file_name}")
-            return
-
-        # Update metadata if not already up to date
-        if has_core_tags:
-            overwrite_metadata(core_xml_path, personal_fields_core_xml)
-        if has_app_tags:
-            overwrite_metadata(app_xml_path, personal_fields_app_xml, is_core=False)
-
-        modified = microsoft_file_name
-        if not in_place:
-            modified = (
-                microsoft_file_name[: microsoft_file_name.rfind(".")]
-                + "_updated"
-                + "."
-                + microsoft_format
-            )
-        with zipfile.ZipFile(modified, "w", compression=zipfile.ZIP_DEFLATED) as file:
-            for file_name in source_file.namelist():
-                file.write(os.path.join(unzipped_dir, file_name), file_name)
-            file.close()
-
-        if verbose:
-            print(f"Updated metadata for: {microsoft_file_name}")
-
-        return modified
-    finally:
-        # Ensure the source_file is closed before removing directory
-        source_file.close()
-        # On Windows, we may need to force garbage collection or add a small delay
-        # to ensure file handles are fully released before removing the directory
-        import gc
-
-        gc.collect()  # Force garbage collection to release any remaining references
-        try:
-            shutil.rmtree(unzipped_dir)
-        except PermissionError:
-            # If we can't remove the directory immediately on Windows,
-            # try again after a short delay
-            import time
-
-            time.sleep(0.1)
-            try:
-                shutil.rmtree(unzipped_dir)
-            except PermissionError:
-                # If it still fails, log the error but don't crash
-                if verbose:
-                    print(
-                        f"Warning: Could not remove temporary directory {unzipped_dir}, it may be cleaned up later"
-                    )
+    return _process_metadata(microsoft_file_name, in_place, verbose, 'update', new_metadata_dict=config)
 
 
 def update_all(config_file_name, in_place=False, verbose=False):
@@ -521,6 +519,48 @@ def clear_gif_metadata(gif_file_name, in_place=False, verbose=False):
 
     return output_path
 
+
+def extract_metadata(microsoft_file_name):
+    """
+    Extract metadata from the given Microsoft file.
+
+    :param microsoft_file_name: name of Microsoft file
+    :type microsoft_file_name: str
+    :return: dictionary containing the metadata fields
+    :rtype: dict
+    """
+    microsoft_format = get_file_format(microsoft_file_name)
+    if microsoft_format is None or microsoft_format not in SUPPORTED_MICROSOFT_FORMATS:
+        return {}
+
+    unzipped_dir, source_file = extract(microsoft_file_name)
+
+    try:
+        doc_props_dir = os.path.join(unzipped_dir, "docProps")
+        core_xml_path = os.path.join(doc_props_dir, "core.xml")
+        app_xml_path = os.path.join(doc_props_dir, "app.xml")
+
+        metadata = {}
+        
+        # Extract from core.xml
+        if os.path.exists(core_xml_path):
+            tree = ET.parse(core_xml_path)
+            for xml_element in tree.iter():
+                for personal_field, associated_xml_tag in CORE_XML_MAP.items():
+                    if associated_xml_tag in xml_element.tag:
+                        metadata[personal_field] = xml_element.text or ""
+        
+        # Extract from app.xml
+        if os.path.exists(app_xml_path):
+            tree = ET.parse(app_xml_path)
+            for xml_element in tree.iter():
+                for personal_field, associated_xml_tag in APP_XML_MAP.items():
+                    if associated_xml_tag in xml_element.tag:
+                        metadata[personal_field] = xml_element.text or ""
+
+        return metadata
+    finally:
+        _cleanup_extracted(unzipped_dir, source_file, False)  # Using the existing cleanup function
 
 CLEAR_HANDLERS = {
     "docx": clear,
