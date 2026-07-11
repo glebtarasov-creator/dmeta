@@ -71,7 +71,9 @@ def clear(microsoft_file_name, in_place=False, verbose=False):
     :type in_place: bool
     :param verbose: the `verbose` flag enables detailed output
     :type verbose: bool
-    :return: None
+    :return: path to the cleared file, None if format is unsupported, 
+             or original path if metadata is already cleared
+    :rtype: str or None
     """
     microsoft_format = get_file_format(microsoft_file_name)
     if microsoft_format is None or microsoft_format not in SUPPORTED_MICROSOFT_FORMATS:
@@ -104,7 +106,7 @@ def clear(microsoft_file_name, in_place=False, verbose=False):
         if core_cleared and app_cleared:
             if verbose:
                 print(f"Metadata is already cleared for: {microsoft_file_name}")
-            return
+            return microsoft_file_name  # Return the original file path when already cleared
 
         # Clear metadata if not already cleared
         overwrite_metadata(core_xml_path)
