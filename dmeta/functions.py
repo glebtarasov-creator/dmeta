@@ -29,6 +29,26 @@ from .params import (
 )
 
 
+def _output_path(source_file_path, in_place, suffix):
+    """
+    Determine the output path for a processed file.
+    
+    :param source_file_path: path to the source file
+    :type source_file_path: str
+    :param in_place: whether to modify the file in place
+    :type in_place: bool
+    :param suffix: suffix to add to the filename when not modifying in place
+    :type suffix: str
+    :return: path for the output file
+    :rtype: str
+    """
+    if in_place:
+        return source_file_path
+    else:
+        base, ext = os.path.splitext(source_file_path)
+        return base + suffix + ext
+
+
 def overwrite_metadata(xml_path, metadata=None, is_core=True):
     """
     Overwrite metadata in an XML file based on a predefined mapping.
@@ -83,6 +103,66 @@ def _cleanup_extracted(unzipped_dir, source_file, verbose):
                 )
 
 
+def _extract_and_prepare(source_file_path, verbose):
+    """
+    Extract the file and prepare the processing environment.
+    
+    :param source_file_path: path to the source file to process
+    :type source_file_path: str
+    :param verbose: whether to enable verbose output
+    :type verbose: bool
+    :return: tuple of (unzipped_dir, source_file, xml_paths_dict, microsoft_format)
+    :rtype: tuple
+    """
+    # Validate format
+    microsoft_format = get_file_format(source_file_path)
+    if microsoft_format is None or microsoft_format not in SUPPORTED_MICROSOFT_FORMATS:
+        return None, None, None, None
+
+    # Extract the file
+    unzipped_dir, source_file = extract(source_file_path)
+    
+    doc_props_dir = os.path.join(unzipped_dir, "docProps")
+    core_xml_path = os.path.join(doc_props_dir, "core.xml")
+    app_xml_path = os.path.join(doc_props_dir, "app.xml")
+    
+    xml_paths = {
+        'core_xml_path': core_xml_path,
+        'app_xml_path': app_xml_path
+    }
+    
+    return unzipped_dir, source_file, xml_paths, microsoft_format
+
+
+def _repack_and_cleanup(unzipped_dir, source_file, modified_path, verbose, process_type):
+    """
+    Repack the file into ZIP and perform cleanup.
+    
+    :param unzipped_dir: path to the unzipped directory
+    :type unzipped_dir: str
+    :param source_file: the opened source file object
+    :type source_file: zipfile.ZipFile
+    :param modified_path: path to the modified file to create
+    :type modified_path: str
+    :param verbose: whether to enable verbose output
+    :type verbose: bool
+    :param process_type: type of processing ('clear' or 'update')
+    :type process_type: str
+    :return: path to the modified file
+    :rtype: str
+    """
+    # Re-zip the file
+    with zipfile.ZipFile(modified_path, "w", compression=zipfile.ZIP_DEFLATED) as zip_file:
+        for file_name in source_file.namelist():
+            zip_file.write(os.path.join(unzipped_dir, file_name), file_name)
+
+    if verbose:
+        action = "cleared" if process_type == 'clear' else "updated"
+        print(f"{action.capitalize()} metadata for: {modified_path}")
+
+    return modified_path
+
+
 def _process_metadata(source_file_path, in_place, verbose, process_type, **kwargs):
     """
     Shared function to process metadata in Microsoft files (clear/update)
@@ -99,19 +179,15 @@ def _process_metadata(source_file_path, in_place, verbose, process_type, **kwarg
     :return: path to the processed file or None if unsuccessful
     :rtype: str or None
     """
-    # Validate format
-    microsoft_format = get_file_format(source_file_path)
-    if microsoft_format is None or microsoft_format not in SUPPORTED_MICROSOFT_FORMATS:
+    # Extract and prepare
+    unzipped_dir, source_file, xml_paths, microsoft_format = _extract_and_prepare(source_file_path, verbose)
+    if xml_paths is None:
         return None
-
-    # Extract the file
-    unzipped_dir, source_file = extract(source_file_path)
+    
+    core_xml_path = xml_paths['core_xml_path']
+    app_xml_path = xml_paths['app_xml_path']
 
     try:
-        doc_props_dir = os.path.join(unzipped_dir, "docProps")
-        core_xml_path = os.path.join(doc_props_dir, "core.xml")
-        app_xml_path = os.path.join(doc_props_dir, "app.xml")
-
         # Define processing logic based on type
         if process_type == 'clear':
             # Define the clear-specific check function
@@ -142,14 +218,7 @@ def _process_metadata(source_file_path, in_place, verbose, process_type, **kwarg
             overwrite_metadata(app_xml_path, is_core=False)
 
             # Determine output filename
-            modified = source_file_path
-            if not in_place:
-                modified = (
-                    source_file_path[: source_file_path.rfind(".")]
-                    + "_cleared"
-                    + "."
-                    + microsoft_format
-                )
+            modified = _output_path(source_file_path, in_place, "_cleared")
 
         elif process_type == 'update':
             # Get the metadata from kwargs
@@ -203,28 +272,13 @@ def _process_metadata(source_file_path, in_place, verbose, process_type, **kwarg
                 overwrite_metadata(app_xml_path, personal_fields_app_xml, is_core=False)
 
             # Determine output filename
-            modified = source_file_path
-            if not in_place:
-                modified = (
-                    source_file_path[: source_file_path.rfind(".")]
-                    + "_updated"
-                    + "."
-                    + microsoft_format
-                )
+            modified = _output_path(source_file_path, in_place, "_updated")
         else:
             raise ValueError(f"Unknown process type: {process_type}")
 
-        # Re-zip the file
-        with zipfile.ZipFile(modified, "w", compression=zipfile.ZIP_DEFLATED) as file:
-            for file_name in source_file.namelist():
-                file.write(os.path.join(unzipped_dir, file_name), file_name)
-            file.close()
-
-        if verbose:
-            action = "cleared" if process_type == 'clear' else "updated"
-            print(f"{action.capitalize()} metadata for: {source_file_path}")
-
-        return modified
+        # Repack and cleanup
+        result = _repack_and_cleanup(unzipped_dir, source_file, modified, verbose, process_type)
+        return result
 
     finally:
         _cleanup_extracted(unzipped_dir, source_file, verbose)
